@@ -1,6 +1,7 @@
 #include <iostream>
 #include <libheif/heif.h>
-#include "encoder_png.h"
+#include <memory>
+#include "PngEncoder.h"
 
 using namespace std;
 
@@ -13,12 +14,11 @@ int main() {
 
     heif_image* img;
     heif_decode_image(handle, &img, heif_colorspace_RGB, heif_chroma_interleaved_RGB, nullptr);
-    std::unique_ptr<Encoder> encoder;
+    std::unique_ptr<PngEncoder> pngEncoder;
 
-    auto pngEncoder = new PngEncoder();
-    pngEncoder->set_compression_level(5);
-    encoder.reset(pngEncoder);
-    encoder->Encode(handle, img, "/home/olikhogub/Downloads/sample1.png");
+    char* buffer = nullptr;
+    size_t size = 0;
+    pngEncoder->encode(handle, img, &buffer, &size, 9);
     heif_image_release(img);
     heif_image_handle_release(handle);
     return 0;
