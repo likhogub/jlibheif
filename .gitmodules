@@ -1,0 +1,9 @@
+[submodule "external/libpng"]
+	path = external/libpng
+	url = https://github.com/glennrp/libpng.git
+[submodule "external/zlib"]
+	path = external/zlib
+	url = https://github.com/madler/zlib.git
+[submodule "external/libheif"]
+	path = external/libheif
+	url = https://github.com/strukturag/libheif
