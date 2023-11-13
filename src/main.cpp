@@ -18,7 +18,7 @@ int main() {
 
     char* buffer = nullptr;
     size_t size = 0;
-    pngEncoder->encode(handle, img, &buffer, &size, 9);
+    pngEncoder->encode(img, &buffer, &size, 9);
     heif_image_release(img);
     heif_image_handle_release(handle);
     return 0;

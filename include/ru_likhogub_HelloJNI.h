@@ -12,7 +12,7 @@ extern "C" {
  * Method:    sayHello
  * Signature: ([B)[B
  */
-JNIEXPORT jbyteArray JNICALL Java_ru_likhogub_HelloJNI_sayHello
+JNIEXPORT jobject JNICALL Java_ru_likhogub_HelloJNI_sayHello
         (JNIEnv *, jobject, jbyteArray);
 
 #ifdef __cplusplus

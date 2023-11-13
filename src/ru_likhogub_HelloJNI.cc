@@ -1,12 +1,11 @@
 #include <jni.h>
 #include <memory>
-#include <cstdlib>
 #include "ru_likhogub_HelloJNI.h"
 #include "libheif/heif.h"
 #include "PngEncoder.h"
 
 
-JNIEXPORT jbyteArray JNICALL Java_ru_likhogub_HelloJNI_sayHello(JNIEnv *env, jobject, jbyteArray input) {
+JNIEXPORT jobject JNICALL Java_ru_likhogub_HelloJNI_sayHello(JNIEnv *env, jobject, jbyteArray input) {
     jsize length = env->GetArrayLength(input);
     jbyte *bytes = env->GetByteArrayElements(input, nullptr);
 
@@ -21,12 +20,8 @@ JNIEXPORT jbyteArray JNICALL Java_ru_likhogub_HelloJNI_sayHello(JNIEnv *env, job
 
     char* buffer = nullptr;
     size_t size = 0;
-    pngEncoder->encode(handle, img, &buffer, &size, 9);
+    pngEncoder->encode(img, &buffer, &size, 9);
     heif_image_release(img);
     heif_image_handle_release(handle);
-
-    jbyteArray newByteArray = env->NewByteArray((jsize) size);
-    env->SetByteArrayRegion(newByteArray, 0, (jsize) size, (jbyte *) buffer);
-    free(buffer);
-    return newByteArray;
+    return env->NewDirectByteBuffer(buffer, (jsize) size);
 }

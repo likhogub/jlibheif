@@ -1,14 +1,30 @@
 #include <png.h>
 #include "PngEncoder.h"
-#include "libheif/exif.h"
 #include <libheif/heif.h>
 #include <cstdlib>
 #include <cstring>
 
-static const char kMetadataTypeExif[] = "Exif";
+struct mem_encode {
+    char *buffer;
+    size_t size;
+};
 
-bool PngEncoder::encode(const struct heif_image_handle *handle,
-                        const struct heif_image *image,
+void my_png_write_data(png_structp png_ptr, png_bytep data, png_size_t length) {
+    auto *p = (struct mem_encode *) png_get_io_ptr(png_ptr);
+    size_t nsize = p->size + length;
+    if (p->buffer) {
+        p->buffer = (char *) realloc(p->buffer, nsize);
+    } else {
+        p->buffer = (char *) malloc(nsize);
+    }
+    if (!p->buffer) {
+        png_error(png_ptr, "Write Error");
+    }
+    memcpy(p->buffer + p->size, data, length);
+    p->size += length;
+}
+
+bool PngEncoder::encode(const struct heif_image *image,
                         char **destination,
                         size_t *destination_size,
                         int compression_level) {
@@ -30,20 +46,11 @@ bool PngEncoder::encode(const struct heif_image_handle *handle,
         png_set_compression_level(png_ptr, compression_level);
     }
 
-    FILE *fp = open_memstream(destination, destination_size);
-    if (!fp) {
-        png_destroy_write_struct(&png_ptr, &info_ptr);
-        return false;
-    }
-
     if (setjmp(png_jmpbuf(png_ptr))) {
         png_destroy_write_struct(&png_ptr, &info_ptr);
-        fclose(fp);
         fprintf(stderr, "Error while encoding image\n");
         return false;
     }
-
-    png_init_io(png_ptr, fp);
 
     bool withAlpha = (heif_image_get_chroma_format(image) == heif_chroma_interleaved_RGBA ||
                       heif_image_get_chroma_format(image) == heif_chroma_interleaved_RRGGBBAA_BE);
@@ -63,74 +70,6 @@ bool PngEncoder::encode(const struct heif_image_handle *handle,
 
     png_set_IHDR(png_ptr, info_ptr, width, height, bitDepth, colorType,
                  PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
-
-    // --- write ICC profile
-
-    size_t profile_size = heif_image_handle_get_raw_color_profile_size(handle);
-    if (profile_size > 0) {
-        uint8_t *profile_data = static_cast<uint8_t *>(malloc(profile_size));
-        heif_image_handle_get_raw_color_profile(handle, profile_data);
-        char profile_name[] = "unknown";
-        png_set_iCCP(png_ptr, info_ptr, profile_name, PNG_COMPRESSION_TYPE_BASE,
-#if PNG_LIBPNG_VER < 10500
-                (png_charp) profile_data,
-#else
-                     (png_const_bytep) profile_data,
-#endif
-                     (png_uint_32) profile_size);
-        free(profile_data);
-    }
-
-
-    // --- write EXIF metadata
-
-#ifdef PNG_eXIf_SUPPORTED
-    size_t exifsize = 0;
-    uint8_t *exifdata = get_exif_metadata(handle, &exifsize);
-    if (exifdata) {
-        if (exifsize > 4) {
-            uint32_t skip = (exifdata[0] << 24) | (exifdata[1] << 16) | (exifdata[2] << 8) | exifdata[3];
-            skip += 4;
-
-            uint8_t *ptr = exifdata + skip;
-            size_t size = exifsize - skip;
-
-            // libheif by default normalizes the image orientation, so that we have to set the EXIF Orientation to "Horizontal (normal)"
-            modify_exif_orientation_tag_if_it_exists(ptr, (int) size, 1);
-
-            png_set_eXIf_1(png_ptr, info_ptr, (png_uint_32) size, ptr);
-        }
-
-        free(exifdata);
-    }
-#endif
-
-    // --- write XMP metadata
-
-    // spec: https://raw.githubusercontent.com/adobe/xmp-docs/master/XMPSpecifications/XMPSpecificationPart3.pdf
-    std::vector<uint8_t> xmp = get_xmp_metadata(handle);
-    if (!xmp.empty()) {
-        // make sure that XMP string is always null terminated.
-        if (xmp.back() != 0) {
-            xmp.push_back(0);
-        }
-
-        // compute XMP string length
-        size_t text_length = 0;
-        while (xmp[text_length] != 0) {
-            text_length++;
-        }
-
-        png_text xmp_text{}; // important to zero-initialize the structure so that the remaining fields are NULL !
-        xmp_text.compression = PNG_ITXT_COMPRESSION_NONE;
-        xmp_text.key = (char *) "XML:com.adobe.xmp";
-        xmp_text.text = (char *) xmp.data();
-        xmp_text.text_length = 0; // should be 0 for ITXT according the libpng documentation
-        xmp_text.itxt_length = text_length;
-        png_set_text(png_ptr, info_ptr, &xmp_text, 1);
-    }
-
-    png_write_info(png_ptr, info_ptr);
 
     uint8_t **row_pointers = new uint8_t *[height];
 
@@ -158,61 +97,15 @@ bool PngEncoder::encode(const struct heif_image_handle *handle,
             }
         }
     }
-    png_write_image(png_ptr, row_pointers);
-    png_write_end(png_ptr, nullptr);
-    png_destroy_write_struct(&png_ptr, &info_ptr);
+
+    png_set_rows(png_ptr, info_ptr, row_pointers);
+    mem_encode state{};
+    png_set_write_fn(png_ptr, &state, my_png_write_data, nullptr);
+    png_write_png(png_ptr, info_ptr, PNG_TRANSFORM_IDENTITY, nullptr);
+
+    *destination = state.buffer;
+    *destination_size = state.size;
+
     delete[] row_pointers;
-    fclose(fp);
     return true;
-}
-
-uint8_t *PngEncoder::get_exif_metadata(const struct heif_image_handle *handle, size_t *size) {
-    heif_item_id metadata_id;
-    int count = heif_image_handle_get_list_of_metadata_block_IDs(handle, kMetadataTypeExif,
-                                                                 &metadata_id, 1);
-
-    for (int i = 0; i < count; i++) {
-        size_t datasize = heif_image_handle_get_metadata_size(handle, metadata_id);
-        uint8_t *data = static_cast<uint8_t *>(malloc(datasize));
-        if (!data) {
-            continue;
-        }
-
-        heif_error error = heif_image_handle_get_metadata(handle, metadata_id, data);
-        if (error.code != heif_error_Ok) {
-            free(data);
-            continue;
-        }
-
-        *size = datasize;
-        return data;
-    }
-
-    return nullptr;
-}
-
-std::vector<uint8_t> PngEncoder::get_xmp_metadata(const struct heif_image_handle *handle) {
-    std::vector<uint8_t> xmp;
-
-    heif_item_id metadata_ids[16];
-    int count = heif_image_handle_get_list_of_metadata_block_IDs(handle, nullptr, metadata_ids, 16);
-
-    for (int i = 0; i < count; i++) {
-        if (strcmp(heif_image_handle_get_metadata_type(handle, metadata_ids[i]), "mime") == 0 &&
-            strcmp(heif_image_handle_get_metadata_content_type(handle, metadata_ids[i]), "application/rdf+xml") == 0) {
-
-            size_t datasize = heif_image_handle_get_metadata_size(handle, metadata_ids[i]);
-            xmp.resize(datasize);
-
-            heif_error error = heif_image_handle_get_metadata(handle, metadata_ids[i], xmp.data());
-            if (error.code != heif_error_Ok) {
-                // TODO: return error
-                return {};
-            }
-
-            return xmp;
-        }
-    }
-
-    return {};
 }
